@@ -10,6 +10,84 @@ app.secret_key = "spottem"
 app.config['SESSION_COOKIE_NAME'] = 'spottem cookie'
 TOKEN_INFO = "token_info"
 
+# Including the class here since importing it from outside was giving issues
+# response: API call response in JSON format
+# playing: boolean to determine if user is currently played a song or paused a song
+class SongInfo:
+    def __init__(self, response, playing = True):
+        if playing: # user is currently playing a song
+            # Song Information
+            self.song_name = response["item"]["name"]
+            self.artist_name = response["item"]["artists"][0]["name"]
+
+            # Time Interval Variables
+            self.last_played = 0 # UTC integer of time elapsed since user last played song
+            self.time_started = response["timestamp"] // 1000 # Time the user started playing the song
+            now = int(time.time())
+            self.time_elapsed = self.getTimeStr((now - self.time_started) // 60)
+
+            # User Status Variables
+            self.is_playing = response["is_playing"] # determines if user is currently playing a song
+            print(f"is_playing: {self.is_playing}")
+
+            # Song Status
+            self.current = playing
+
+        else: # User has not played a song in a while
+            # Song Information
+            self.song_name = response["items"][0]["track"]["name"]
+            self.artist_name = response["items"][0]["track"]["artists"][0]["name"]
+            
+            # Time Interval Variables
+            self.time_started = response["items"][0]["played_at"]
+            self.played_time = datetime.strptime(self.time_started[0:19], '%Y-%m-%dT%H:%M:%S') # converting string to datetime object
+            now = datetime.utcnow()
+            self.time_elapsed = self.getTimeStr(int((now - self.played_time).total_seconds()) // 60)
+
+            # User Status Variables
+            self.is_playing = False
+
+            # song status
+            self.current = not playing
+
+    
+    def updated_elapsed_time(self):
+        if not self.current: # the song is pulled from current_user_recently_played
+            now = datetime.utcnow()
+            return self.getTimeStr(int((now - self.played_time).total_seconds()) // 60)
+        else:
+            now = int(time.time())
+            self.time_elapsed = self.getTimeStr((now - self.time_started) // 60)
+
+    def getTimeStr(self, time_elapsed):
+        if time_elapsed >= 1440: # been over a day since last song
+                time_elapsed = (time_elapsed // 1440)
+                if time_elapsed > 1:
+                    time_elapsed = str(time_elapsed) + " days"
+                else:
+                    time_elapsed = str(time_elapsed) + " day"
+        elif time_elapsed >= 60: # been over an hour since last song
+            time_elapsed = (time_elapsed // 60)
+            if time_elapsed > 1:
+                time_elapsed = str(time_elapsed) + " hours"
+            else:
+                time_elapsed = str(time_elapsed) + " hour"
+        elif time_elapsed > 1:
+            time_elapsed = str(time_elapsed)  + " minutes"
+        else:
+                time_elapsed = str(time_elapsed) + " minute"
+
+        return time_elapsed
+
+    def get_details(self, username):
+        if self.is_playing: # currently playing a song
+            return f"{username} is listening to {self.song_name} by {self.artist_name}"
+        else: # The user either paused the song or has not played any recently
+            return f"{username} listened to {self.song_name} by {self.artist_name} {self.time_elapsed} ago."
+
+    def print(self):
+        print(f"{self.song_name} by {self.artist_name}, time elapsed: {self.time_elapsed}")
+
 @app.route('/')
 def login():
     session.clear()
@@ -51,46 +129,39 @@ def getTimeStr(time_elapsed):
 
     return time_elapsed
 
-@app.route('/getUserInfo')
-def getUserInfo():
+@app.route('/testing')
+def testing():
     try:
         token_info = get_token()
     except:
         print("user not logged in")
         return redirect(url_for("login", _external=False)) # redirects to login page
 
+@app.route('/getUserInfo')
+def getUserInfo():
+
+    try:
+        token_info = get_token()
+    except:
+        print("user not logged in")
+        return redirect(url_for("login", _external=False)) # redirects to login page
+    
     sp = spotipy.Spotify(auth=token_info['access_token'])
-
+    
     user_display_name = sp.current_user()["display_name"]
-    current = sp.current_user_playing_track()
-    if current is None: # if not currently playing anything, retrieves most recently played object
+    
+    response = sp.current_user_playing_track()
+    
+    print(f"Response None: {response is None}")
+
+    if response is None: # if not currently playing anything, retrieves most recently played object
         recent = sp.current_user_recently_played(limit = 1)
-        #int(time.time())
-        now = datetime.utcnow() # retrieving current utc time
-        print("now:", now)
+        last_song = SongInfo(recent, playing = False)
+        
+        return last_song.get_details(user_display_name)
 
-        timestamp = recent["items"][0]["played_at"] # retrieving timestamp object
-        print("timestamp:", timestamp)
-        played_time = datetime.strptime(timestamp[0:19], '%Y-%m-%dT%H:%M:%S') # converting string to datetime object
-        print("played_time:", played_time)
-
-        time_elapsed = (now - played_time) # calculating time passed since last song played
-        time_elapsed = (int(time_elapsed.total_seconds()) // 60 ) # converting to minutes
-        time_elapsed = getTimeStr(time_elapsed)
-
-        return user_display_name + " listened to " + recent["items"][0]["track"]["name"] + " by " + recent["items"][0]["track"]["artists"][0]["name"] + " " + time_elapsed + " ago."
-    elif not current["is_playing"]:
-        now = int(time.time())
-        timestamp = current["timestamp"] // 1000
-        print("timestamp:", timestamp)
-        print("now:", now)
-        time_elapsed = (now - timestamp) // 60
-        print("time elapsed:", time_elapsed)
-        time_elapsed = getTimeStr(time_elapsed)
-        print(time_elapsed)
-        return user_display_name + " listened to " + current["item"]["name"] + " by " + current["item"]["artists"][0]["name"] + " " + time_elapsed + " ago."
-
-    return user_display_name + " is listening to " + current["item"]["name"] + " by " + current["item"]["artists"][0]["name"] + "."
+    curr_song = SongInfo(response)
+    return curr_song.get_details(user_display_name)
 
 '''
 checks if token info exists
